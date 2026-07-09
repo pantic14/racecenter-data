@@ -1,13 +1,19 @@
 name: record stage
 
 # The recorder captures the whole /live-stream firehose for one Tour stage and
-# commits the gzipped recording + updated index.json. GitHub's scheduled cron can
-# lag ~10-15 min, so 10:45 UTC (12:45 CEST) leaves margin before a typical start;
-# workflow_dispatch is the manual backup if the cron is late or missed.
+# commits the gzipped recording + updated index.json.
+#
+# TIMING: a GitHub job is capped at 6h wall-clock (hard platform limit, kills the
+# job). The recorder self-stops and WRITES at 5.75h (RC_MAX_MS below), safely under
+# that. So the usable window is ~5.75h and must span from before the start to after
+# the finish. The cron fires 10:20 UTC (12:20 CEST) — GitHub can lag it ~10-15 min,
+# so it's reliably running before a ~12:40 start, and 5.75h later (~18:05 CEST) it
+# still covers late finishes. For stages that start much earlier/later, add a
+# per-date cron override (e.g. `- cron: '00 09 14 7 *'`) or use workflow_dispatch.
 
 on:
   schedule:
-    - cron: '45 10 * 7 *' # every day in July, 10:45 UTC
+    - cron: '20 10 * 7 *' # every day in July, 10:20 UTC (12:20 CEST)
   workflow_dispatch:
     inputs:
       date:
@@ -25,7 +31,7 @@ concurrency:
 jobs:
   record:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # hard cap above the recorder's own 5.5h stop
+    timeout-minutes: 355 # above the recorder's 5.75h stop, below GitHub's 6h kill
     steps:
       - uses: actions/checkout@v4
 
@@ -36,6 +42,7 @@ jobs:
       - name: Record the stage
         env:
           RC_DATE: ${{ github.event.inputs.date }}
+          RC_MAX_MS: '20700000' # 5.75h — self-stop + write before GitHub's 6h job kill
         run: node recorder.mjs
 
       - name: Commit the recording if there is a new one
