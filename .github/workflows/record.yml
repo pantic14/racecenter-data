@@ -1,0 +1,51 @@
+name: record stage
+
+# The recorder captures the whole /live-stream firehose for one Tour stage and
+# commits the gzipped recording + updated index.json. GitHub's scheduled cron can
+# lag ~10-15 min, so 10:45 UTC (12:45 CEST) leaves margin before a typical start;
+# workflow_dispatch is the manual backup if the cron is late or missed.
+
+on:
+  schedule:
+    - cron: '45 10 * 7 *' # every day in July, 10:45 UTC
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Override stage date (yyyy-mm-dd), for manual/backfill runs'
+        required: false
+
+permissions:
+  contents: write
+
+# Never let two recorders of the same stage run at once.
+concurrency:
+  group: record-stage
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # hard cap above the recorder's own 5.5h stop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Record the stage
+        env:
+          RC_DATE: ${{ github.event.inputs.date }}
+        run: node recorder.mjs
+
+      - name: Commit the recording if there is a new one
+        run: |
+          git config user.name  "racecenter-recorder"
+          git config user.email "recorder@users.noreply.github.com"
+          if [ -n "$(git status --porcelain recordings index.json)" ]; then
+            git add recordings index.json
+            git commit -m "record: stage $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "No new recording (rest day or no telemetry) — nothing to commit."
+          fi
