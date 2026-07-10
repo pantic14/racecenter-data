@@ -1,0 +1,64 @@
+name: import official replay
+
+# Downloads ASO's post-stage official replay (static positions.csv per rider from the
+# public GCS bucket) and commits it as recordings/<date>.json.gz + updated index.json.
+# This is the PRIMARY replay source; the live recorder (record.yml) is the fallback.
+#
+# `--backfill` imports every finished stage (date < today) whose bucket data is present
+# and that hasn't been imported from the official source yet — so a single daily run
+# both catches up and picks up the newest finished stage. IMPORTANT: the bucket only
+# keeps each stage's positions.csv for ~3 days after it finishes, so this must run
+# daily during the race — a longer gap loses stages permanently.
+
+on:
+  schedule:
+    - cron: '30 20 * 7 *' # every day in July, 20:30 UTC (22:30 CEST) — well after stage finish
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Import a single stage number (else backfill all finished stages)'
+        required: false
+      date:
+        description: 'Import a single stage by date (yyyy-mm-dd)'
+        required: false
+
+permissions:
+  contents: write
+
+# Never let the importer and a manual run collide on index.json.
+concurrency:
+  group: import-official
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Import official replay
+        run: |
+          if [ -n "${{ github.event.inputs.stage }}" ]; then
+            node import-official.mjs --stage "${{ github.event.inputs.stage }}"
+          elif [ -n "${{ github.event.inputs.date }}" ]; then
+            node import-official.mjs --date "${{ github.event.inputs.date }}"
+          else
+            node import-official.mjs --backfill
+          fi
+
+      - name: Commit new recordings if any
+        run: |
+          git config user.name  "racecenter-importer"
+          git config user.email "importer@users.noreply.github.com"
+          if [ -n "$(git status --porcelain recordings index.json)" ]; then
+            git add recordings index.json
+            git commit -m "import: official replay $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "No new official replay to import — nothing to commit."
+          fi

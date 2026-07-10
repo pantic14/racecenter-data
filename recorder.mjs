@@ -15,29 +15,21 @@
 // escape hatch, hence raw https.
 
 import https from 'node:https';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gzipSync } from 'node:zlib';
+import { DEFAULT_BASE, num, raceDate, fetchRest, writeRecording, upsertIndex } from './shared.mjs';
+
+// Re-exported so recorder.test.mjs can import it from here alongside createSSEParser.
+export { raceDate };
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const BASE = process.env.RC_BASE || 'https://racecenter.letour.fr';
+const BASE = process.env.RC_BASE || DEFAULT_BASE;
 
 // All tunables env-overridable so the out-of-hours local test can use short timers.
 const HARD_TIMEOUT_MS = num(process.env.RC_MAX_MS, 5.5 * 3600 * 1000);
 const SILENCE_MS = num(process.env.RC_SILENCE_MS, 30 * 60 * 1000);
 const MIN_TICKS = num(process.env.RC_MIN_TICKS, 100);
 const MONITOR_MS = num(process.env.RC_MONITOR_MS, 30 * 1000);
-
-function num(v, def) {
-  const n = Number(v);
-  return Number.isFinite(n) && v != null && v !== '' ? n : def;
-}
-
-/** Race-local "today" (yyyy-mm-dd). Stages run in CEST and finish before ~18:00, so UTC+2 is safe all day. */
-export function raceDate(now = new Date()) {
-  return new Date(now.getTime() + 2 * 3600 * 1000).toISOString().slice(0, 10);
-}
 
 /**
  * Incremental SSE parser. Feed it arbitrary chunks; it calls onEvent({event, data})
@@ -84,30 +76,6 @@ export function createSSEParser(onEvent) {
   };
 }
 
-/** Fetch JSON via the built-in fetch (only the long-lived SSE breaks Node's parser, not these). */
-async function getJson(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
-  return res.json();
-}
-
-/** One-time REST snapshot embedded in the recording so it stays self-contained. */
-async function fetchRest(year, date) {
-  const [riders, teams, stageList] = await Promise.all([
-    getJson(`${BASE}/api/allCompetitors-${year}`),
-    getJson(`${BASE}/api/team-${year}`).catch(() => []),
-    getJson(`${BASE}/api/stage-${year}`),
-  ]);
-  /** @type {Record<string, any>} */
-  const stages = {};
-  for (const s of stageList) {
-    const d = String(s.date).slice(0, 10);
-    s.name = `Stage ${s.stage} - ${s.arrivalCity?.label ?? ''}`;
-    stages[d] = s;
-  }
-  return { riders, teams, stages };
-}
-
 /**
  * Open one SSE connection and pipe its body to `feed`. Resolves when the server
  * closes the stream (normal end of stage), rejects on transport / non-200 errors.
@@ -152,7 +120,7 @@ async function main() {
   const bind = `telemetryCompetitor-${year}`;
 
   console.error(`[recorder] ${date} — snapshotting REST…`);
-  const rest = await fetchRest(year, date);
+  const rest = await fetchRest(year, BASE);
   const currentStage = rest.stages[date] || null;
   console.error(`[recorder] stage: ${currentStage?.name ?? '(unknown)'} — waiting for telemetry`);
 
@@ -223,12 +191,9 @@ async function main() {
       rest,
       events,
     };
-    const gz = gzipSync(Buffer.from(JSON.stringify(recording)), { level: 9 });
-    const dir = path.join(HERE, 'recordings');
-    fs.mkdirSync(dir, { recursive: true });
     const rel = `recordings/${date}.json.gz`;
-    fs.writeFileSync(path.join(HERE, rel), gz);
-    upsertIndex({
+    const { bytes } = writeRecording(path.join(HERE, 'recordings'), date, recording);
+    upsertIndex(path.join(HERE, 'index.json'), {
       id: date,
       date,
       name: currentStage?.name ?? '',
@@ -236,10 +201,10 @@ async function main() {
       ticks: telemetryCount,
       t0,
       t1,
-      bytes: gz.length,
+      bytes,
       file: rel,
     });
-    console.error(`[recorder] wrote ${rel} (${(gz.length / 1e6).toFixed(1)} MB)`);
+    console.error(`[recorder] wrote ${rel} (${(bytes / 1e6).toFixed(1)} MB)`);
     process.exit(0);
   }
 
@@ -259,23 +224,6 @@ async function main() {
     await sleep(backoff);
     backoff = Math.min(backoff * 2, 30_000);
   }
-}
-
-/** Read index.json (array), replace/insert the entry by id, keep it sorted by date. */
-function upsertIndex(entry) {
-  const file = path.join(HERE, 'index.json');
-  /** @type {any[]} */
-  let index = [];
-  try {
-    index = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (!Array.isArray(index)) index = [];
-  } catch {
-    index = [];
-  }
-  index = index.filter((e) => e.id !== entry.id);
-  index.push(entry);
-  index.sort((a, b) => (a.date < b.date ? -1 : 1));
-  fs.writeFileSync(file, JSON.stringify(index, null, 2) + '\n');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

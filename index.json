@@ -1,1 +1,38 @@
-[]
+[
+  {
+    "id": "2026-07-07",
+    "date": "2026-07-07",
+    "name": "Stage 4 - Foix",
+    "km": 181.9,
+    "ticks": 1645,
+    "t0": 1783420242,
+    "t1": 1783439646,
+    "bytes": 3218416,
+    "file": "recordings/2026-07-07.json.gz",
+    "source": "official"
+  },
+  {
+    "id": "2026-07-08",
+    "date": "2026-07-08",
+    "name": "Stage 5 - Pau",
+    "km": 158.3,
+    "ticks": 1236,
+    "t0": 1783513188,
+    "t1": 1783525716,
+    "bytes": 2629916,
+    "file": "recordings/2026-07-08.json.gz",
+    "source": "official"
+  },
+  {
+    "id": "2026-07-09",
+    "date": "2026-07-09",
+    "name": "Stage 6 - Gavarnie-Gèdre",
+    "km": 186.2,
+    "ticks": 2959,
+    "t0": 1783593726,
+    "t1": 1783611528,
+    "bytes": 6386109,
+    "file": "recordings/2026-07-09.json.gz",
+    "source": "official"
+  }
+]
