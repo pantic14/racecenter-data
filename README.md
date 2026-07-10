@@ -52,9 +52,10 @@ recordings/<date>.json.gz    # one recording per stage (official ~3-7 MB, live ~
   binds, but the replay discards them, so keeping them only bloated recordings ~100x
   and could blow `JSON.stringify` past V8's ~512 MB string limit on busy stages.
 - Weather travels inside the telemetry itself (`Course`, `RiderWindDir`, `kphWind`,
-  `degC` per rider) in **live** recordings. **Official** recordings only carry
-  position/speed/gap (the CSV has no weather/altitude/gradient), so those overlays are
-  blank in an official replay.
+  `degC` per rider) in **live** recordings. **Official** recordings carry
+  position/speed/gap, plus per-rider **altitude (`mAlt`) and road gradient (`Gradient`)
+  reconstructed from the stage's `trace.json` elevation profile** (positions.csv itself
+  has neither). Only wind, temperature and heading are absent from an official replay.
 - `meta.source` is `"official"` for imported stages (absent for live recordings). The
   index entry mirrors it in `source` so the importer knows what to skip on re-runs.
 

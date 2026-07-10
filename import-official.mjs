@@ -44,7 +44,80 @@ const TELEMETRY_BIND = (year) => `telemetryCompetitor-${year}`;
 const stagePath = (year, stage) => `${BUCKET}/${RACE}/${year}/stage-${stage}`;
 const ridersManifestUrl = (year, stage) => `${stagePath(year, stage)}/riders/manifest.json`;
 const positionsUrl = (year, stage, bib) => `${stagePath(year, stage)}/riders/bib-${bib}/positions.csv`;
+const traceUrl = (year, stage) => `${stagePath(year, stage)}/trace.json`;
 const stagesUrl = (year) => `${BUCKET}/${RACE}/${year}/stages_${RACE}_${year}.json`;
+
+// Half-window (metres) over which the road gradient is measured, to smooth GPS noise.
+// Kept above the trace's ~108 m point spacing so the window spans real neighbours.
+const GRADIENT_WINDOW_M = 150;
+
+/** Great-circle distance between two lat/lon points, in metres. */
+function haversineM(aLat, aLon, bLat, bLon) {
+  const R = 6371000;
+  const toRad = (x) => (x * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLon = toRad(bLon - aLon);
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
+/**
+ * Build an interpolator over a stage's route trace ({routePoints:[{lat,lon,ele}],
+ * totalDistance}) so a rider's altitude and road gradient can be looked up from its
+ * kmToFinish. positions.csv carries neither, but trace.json has the elevation profile
+ * (kmToFinish lines up with totalDistance), and gradient is the local slope of it.
+ * @returns {{ totalKm:number, lookup:(kmToFinish:number)=>{ele:number, grad:number} } | null}
+ */
+export function buildTraceIndex(trace) {
+  const pts = trace?.routePoints;
+  if (!Array.isArray(pts) || pts.length < 2) return null;
+  const n = pts.length;
+  const dist = new Float64Array(n); // metres from start, ascending
+  for (let i = 1; i < n; i++) dist[i] = dist[i - 1] + haversineM(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+  const totalM = dist[n - 1];
+  if (!(totalM > 0)) return null;
+  const totalKm = Number(trace.totalDistance) > 0 ? Number(trace.totalDistance) : totalM / 1000;
+
+  // Gradient (%) at each point: rise over run in the direction of travel, measured
+  // across a ±window so a single noisy elevation sample can't spike it.
+  const grad = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let lo = i;
+    let hi = i;
+    while (lo > 0 && dist[i] - dist[lo] < GRADIENT_WINDOW_M) lo--;
+    while (hi < n - 1 && dist[hi] - dist[i] < GRADIENT_WINDOW_M) hi++;
+    // Ensure the window spans at least the immediate neighbours (point spacing can
+    // exceed the window), otherwise run would be 0 and the gradient always flat.
+    if (lo === i && i > 0) lo = i - 1;
+    if (hi === i && i < n - 1) hi = i + 1;
+    const run = dist[hi] - dist[lo];
+    grad[i] = run > 1 ? ((pts[hi].ele - pts[lo].ele) / run) * 100 : 0;
+  }
+
+  /** Linear interpolation of ele + grad at a distance-from-start (metres). */
+  function at(distM) {
+    if (distM <= 0) return { ele: pts[0].ele, grad: grad[0] };
+    if (distM >= totalM) return { ele: pts[n - 1].ele, grad: grad[n - 1] };
+    let lo = 0;
+    let hi = n - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (dist[mid] <= distM) lo = mid;
+      else hi = mid;
+    }
+    const span = dist[hi] - dist[lo] || 1;
+    const t = (distM - dist[lo]) / span;
+    return { ele: pts[lo].ele + t * (pts[hi].ele - pts[lo].ele), grad: grad[lo] + t * (grad[hi] - grad[lo]) };
+  }
+
+  return {
+    totalKm,
+    lookup(kmToFinish) {
+      const frac = 1 - Math.min(Math.max(kmToFinish / totalKm, 0), 1); // 0 at start → 1 at finish
+      return at(frac * totalM);
+    },
+  };
+}
 
 async function getJson(url) {
   const res = await fetch(url);
@@ -105,10 +178,15 @@ export function parseCsv(text) {
  * the nearest-to-center sample of every rider present. `dt` is the ms gap to the
  * previous frame (0 on the first). Field names are the site's capitalized ones so
  * `normalizeTelemetry` picks them up; absent fields are omitted (→ null/NaN).
+ * If a traceIndex is given, each rider also gets `mAlt` (altitude) and `Gradient`
+ * looked up from its kmToFinish, so the altitude/road-grade overlays work in the
+ * official replay too (positions.csv itself carries neither).
  * @param {Record<string|number, ReturnType<typeof parseCsv>>} samplesByBib
+ * @param {number} year
+ * @param {ReturnType<typeof buildTraceIndex>} [traceIndex]
  * @returns {{dt:number, data:string}[]}
  */
-export function buildEvents(samplesByBib, year) {
+export function buildEvents(samplesByBib, year, traceIndex = null) {
   /** @type {Map<number, Map<number, {sample:any, dist:number}>>} bucket -> bib -> best sample */
   const buckets = new Map();
   for (const samples of Object.values(samplesByBib)) {
@@ -135,6 +213,11 @@ export function buildEvents(samplesByBib, year) {
       if (s.kph != null) r.kph = s.kph;
       if (s.kmToFinish != null) r.kmToFinish = s.kmToFinish;
       if (s.secToFirstRider != null) r.secToFirstRider = s.secToFirstRider;
+      if (traceIndex && s.kmToFinish != null) {
+        const { ele, grad } = traceIndex.lookup(s.kmToFinish);
+        r.mAlt = Math.round(ele);
+        r.Gradient = Math.round(grad * 10) / 10;
+      }
       Riders.push(r);
     }
     const TimeStamp = b * (BUCKET_MS / 1000); // unix seconds
@@ -186,7 +269,18 @@ async function importStage(stage, date) {
     if (++done % 50 === 0) console.error(`[import] ${done}/${bibs.length} riders…`);
   });
 
-  const events = buildEvents(samplesByBib, year);
+  // Route trace gives the altitude profile; enrich riders with altitude + gradient
+  // (positions.csv has neither). Best-effort: a missing trace just leaves them absent.
+  let traceIndex = null;
+  try {
+    const trace = await getJson(traceUrl(year, stage));
+    traceIndex = buildTraceIndex(trace);
+    console.error(`[import] trace: ${trace.routePoints?.length ?? 0} points — enriching altitude + gradient`);
+  } catch (e) {
+    console.error(`[import] no usable trace (${e.message}) — altitude/gradient absent`);
+  }
+
+  const events = buildEvents(samplesByBib, year, traceIndex);
   if (events.length < MIN_TICKS) {
     throw new Error(`only ${events.length} frames (< ${MIN_TICKS}) — stage not ready or no data, nothing written`);
   }

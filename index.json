@@ -7,7 +7,7 @@
     "ticks": 1645,
     "t0": 1783420242,
     "t1": 1783439646,
-    "bytes": 3218416,
+    "bytes": 3519452,
     "file": "recordings/2026-07-07.json.gz",
     "source": "official"
   },
@@ -19,7 +19,7 @@
     "ticks": 1236,
     "t0": 1783513188,
     "t1": 1783525716,
-    "bytes": 2629916,
+    "bytes": 2807080,
     "file": "recordings/2026-07-08.json.gz",
     "source": "official"
   },
@@ -31,7 +31,7 @@
     "ticks": 2959,
     "t0": 1783593726,
     "t1": 1783611528,
-    "bytes": 6386109,
+    "bytes": 7124472,
     "file": "recordings/2026-07-09.json.gz",
     "source": "official"
   }

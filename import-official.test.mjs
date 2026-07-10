@@ -1,7 +1,7 @@
 // node --test import-official.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCsv, buildEvents } from './import-official.mjs';
+import { parseCsv, buildEvents, buildTraceIndex } from './import-official.mjs';
 
 // Two riders on the shared 6s grid, rows newest-first (as the bucket serves them),
 // each with a slightly different phase / coverage window.
@@ -64,6 +64,47 @@ test('buildEvents uses the site capitalized field names and omits absent fields'
   const withCoords = JSON.parse(events[0].data).data.Riders[0];
   assert.equal(withCoords.Latitude, 42.21);
   assert.equal(withCoords.Longitude, -0.21);
+});
+
+// A 3-point climb: ~1 km at +100 m (≈10% up), then ~1 km flat. 0.009° lat ≈ 1 km.
+const TRACE = {
+  totalDistance: null, // force distance from geometry
+  routePoints: [
+    { lat: 43.0, lon: 0, ele: 100 },
+    { lat: 43.009, lon: 0, ele: 200 },
+    { lat: 43.018, lon: 0, ele: 200 },
+  ],
+};
+
+test('buildTraceIndex interpolates altitude and gradient from kmToFinish', () => {
+  const idx = buildTraceIndex(TRACE);
+  assert.ok(idx, 'index built');
+  assert.ok(Math.abs(idx.totalKm - 2) < 0.05, `~2km total, got ${idx.totalKm}`);
+
+  // start (kmToFinish == total) → first point
+  assert.ok(Math.abs(idx.lookup(idx.totalKm).ele - 100) < 1);
+  // finish (kmToFinish 0) → last point
+  assert.ok(Math.abs(idx.lookup(0).ele - 200) < 1);
+  // quarter from start (75% to go) is on the climb → ~150 m, clearly uphill
+  const q = idx.lookup(idx.totalKm * 0.75);
+  assert.ok(q.ele > 120 && q.ele < 180, `mid-climb ele ${q.ele}`);
+  assert.ok(q.grad > 5, `climb gradient positive, got ${q.grad}`);
+  // deep in the flat second half → ~0% grade
+  assert.ok(Math.abs(idx.lookup(idx.totalKm * 0.2).grad) < 3, 'flat section ~0%');
+});
+
+test('buildEvents injects mAlt/Gradient when a trace index is given', () => {
+  const csv =
+    'bib,lat,lon,pos,kph,kmToFinish,secToFirstRider,secToITTLead,status,timestamp\n' +
+    '7,43.004,0,1,20,1.0,0,,active,2026-07-09T15:00:00.000Z\n';
+  const idx = buildTraceIndex(TRACE);
+  const rider = JSON.parse(buildEvents({ 7: parseCsv(csv) }, 2026, idx)[0].data).data.Riders[0];
+  assert.equal(typeof rider.mAlt, 'number');
+  assert.equal(typeof rider.Gradient, 'number');
+  assert.ok(rider.mAlt > 100 && rider.mAlt <= 200, `altitude in range, got ${rider.mAlt}`);
+  // without a trace index the fields are absent
+  const plain = JSON.parse(buildEvents({ 7: parseCsv(csv) }, 2026)[0].data).data.Riders[0];
+  assert.ok(!('mAlt' in plain) && !('Gradient' in plain));
 });
 
 test('multiple samples of one rider in a bin keep the one nearest the bin center', () => {
