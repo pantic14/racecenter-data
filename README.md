@@ -32,9 +32,12 @@ recordings/<date>.json.gz    # one recording per stage (~20-30 MB)
 
 - `rest` is a one-time snapshot of the REST endpoints, embedded so names/teams stay
   correct even if the stage is replayed years later.
-- `events` are **all** SSE events (every bind, not just telemetry), each `data` the
-  verbatim string and `dt` the milliseconds since the previous event — the exact
-  `{dt, data}` shape the extension's mock/replay already consumes.
+- `events` are the **telemetry** SSE events only (`telemetryCompetitor-<year>` with a
+  non-empty `Riders` array), each `data` the verbatim string and `dt` the milliseconds
+  since the previous kept event — the exact `{dt, data}` shape the extension's
+  mock/replay consumes. The firehose also carries socialContent/video/image/ranking
+  binds, but the replay discards them, so keeping them only bloated recordings ~100x
+  and could blow `JSON.stringify` past V8's ~512 MB string limit on busy stages.
 - Weather travels inside the telemetry itself (`Course`, `RiderWindDir`, `kphWind`,
   `degC` per rider), so it is captured natively — no separate weather series.
 

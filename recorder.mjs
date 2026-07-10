@@ -168,9 +168,7 @@ async function main() {
 
   function handleEvent(ev) {
     const now = Date.now();
-    events.push({ dt: lastRecordAt == null ? 0 : now - lastRecordAt, data: ev.data });
-    lastRecordAt = now;
-    lastEventAt = now;
+    lastEventAt = now; // ANY event (telemetry or not) keeps the silence timer alive
 
     if (ev.event !== 'update') return;
     let d;
@@ -179,15 +177,24 @@ async function main() {
     } catch {
       return;
     }
-    if (d.bind === bind && Array.isArray(d.data?.Riders)) {
-      telemetryCount++;
-      const ts = Number(d.data.TimeStamp);
-      if (ts) {
-        if (t0 == null) t0 = ts;
-        t1 = ts;
-      }
-      if (telemetryCount % 300 === 0) console.error(`[recorder] ${telemetryCount} ticks…`);
+    // Keep ONLY non-empty telemetry frames. The firehose also carries socialContent,
+    // video, image and ranking binds that the replay discards anyway — storing them
+    // all bloated recordings ~100x (137 MB for one stage) and blew JSON.stringify past
+    // V8's ~512 MB string limit on busy stages. Empty-Riders frames (the site emits
+    // them frozen before/after a stage) are skipped too, so a post-stage-only run
+    // stays under MIN_TICKS and is discarded instead of saved as a useless recording.
+    // `dt` is the gap since the previous KEPT event so replay timing stays faithful.
+    if (d.bind !== bind || !Array.isArray(d.data?.Riders) || d.data.Riders.length === 0) return;
+    events.push({ dt: lastRecordAt == null ? 0 : now - lastRecordAt, data: ev.data });
+    lastRecordAt = now;
+
+    telemetryCount++;
+    const ts = Number(d.data.TimeStamp);
+    if (ts) {
+      if (t0 == null) t0 = ts;
+      t1 = ts;
     }
+    if (telemetryCount % 300 === 0) console.error(`[recorder] ${telemetryCount} ticks…`);
   }
 
   const startedAt = Date.now();
