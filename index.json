@@ -52,11 +52,12 @@
     "date": "2026-07-11",
     "name": "Stage 8 - Bergerac",
     "km": 180.4,
-    "ticks": 2686,
-    "t0": 1783769283,
-    "t1": 1783783635,
-    "bytes": 16413397,
-    "file": "recordings/2026-07-11.json.gz"
+    "ticks": 2381,
+    "t0": 1783769286,
+    "t1": 1783783620,
+    "bytes": 5237633,
+    "file": "recordings/2026-07-11.json.gz",
+    "source": "official"
   },
   {
     "id": "2026-07-12",
