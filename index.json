@@ -64,10 +64,11 @@
     "date": "2026-07-12",
     "name": "Stage 9 - Ussel",
     "km": 154.6,
-    "ticks": 2409,
-    "t0": 1783857451,
-    "t1": 1783870555,
-    "bytes": 15383953,
-    "file": "recordings/2026-07-12.json.gz"
+    "ticks": 2168,
+    "t0": 1783857450,
+    "t1": 1783870566,
+    "bytes": 5455700,
+    "file": "recordings/2026-07-12.json.gz",
+    "source": "official"
   }
 ]
