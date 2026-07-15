@@ -76,11 +76,12 @@
     "date": "2026-07-14",
     "name": "Stage 10 - Le Lioran",
     "km": 166.6,
-    "ticks": 2531,
-    "t0": 1784029643,
-    "t1": 1784042729,
-    "bytes": 16478780,
-    "file": "recordings/2026-07-14.json.gz"
+    "ticks": 2474,
+    "t0": 1784027868,
+    "t1": 1784042730,
+    "bytes": 6372755,
+    "file": "recordings/2026-07-14.json.gz",
+    "source": "official"
   },
   {
     "id": "2026-07-15",
