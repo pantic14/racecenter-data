@@ -9,14 +9,18 @@ producing the identical format so the extension replays either with no code chan
 Users of the extension only *play back* these files — nobody records anything
 client-side.
 
-- **Official importer (primary)** — `import-official.mjs` downloads ASO's post-stage
+- **Live recorder (primary)** — `recorder.mjs` captures `racecenter.letour.fr/live-stream`
+  (the SSE firehose) during the stage. Richest source: wind, temperature, heading, jersey
+  and road position exist ONLY here and can never be recovered afterwards. Altitude is the
+  one thing the feed never sends, and the embedded `rest.trace` supplies it.
+- **Official importer (safety net)** — `import-official.mjs` downloads ASO's post-stage
   static replay: one `positions.csv` per rider (a ~6s-cadence position timeline for the
   whole stage) from the public GCS bucket that `dansmacourse.letour.fr` uses, and
-  rebuilds them into telemetry frames. Clean and reliable, but the bucket only keeps
-  each stage's `positions.csv` for **~3 days** after it finishes, so it must run daily.
-- **Live recorder (fallback)** — `recorder.mjs` captures `racecenter.letour.fr/live-stream`
-  (the SSE firehose) live during the stage. Kept as a backup for when the official
-  static files aren't published.
+  rebuilds them into telemetry frames. Cleaner and it can't be missed by a failed cron,
+  but it carries no weather — so it covers the days the recorder missed, and `--backfill`
+  leaves an existing live recording alone. The bucket keeps a rolling window of roughly
+  the last **7 stages** (measured 2026-07-15: stages 4-10 served, 1-3 gone), so a missed
+  day is usually still recoverable for a week.
 
 ## Layout
 
@@ -38,13 +42,19 @@ recordings/<date>.json.gz    # one recording per stage (official ~3-7 MB, live ~
 {
   "version": 1,
   "meta": { "date": "2026-07-09", "year": 2026, "recordedAt": "…ISO…" },
-  "rest": { "riders": [...], "teams": [...], "stages": { "2026-07-09": {...} } },
+  "rest": { "riders": [...], "teams": [...], "stages": {...}, "trace": {...} },
   "events": [ { "dt": 0, "data": "<verbatim SSE data string>" }, ... ]
 }
 ```
 
 - `rest` is a one-time snapshot of the REST endpoints, embedded so names/teams stay
   correct even if the stage is replayed years later.
+- `rest.trace` is the stage's official altimetry (ASO's `trace.json`: `routePoints` plus
+  `pointsOfInterest`), embedded by **both** recorders. It is what gives a replay its
+  altitude — the live SSE never sends any — and it is stored rather than fetched at replay
+  time because the bucket drops old seasons. ~60-80 kB, negligible next to the telemetry.
+  Recordings made before this existed have no `trace`; the extension falls back to
+  fetching the stage's trace live, which works until that season is purged.
 - `events` are the **telemetry** SSE events only (`telemetryCompetitor-<year>` with a
   non-empty `Riders` array), each `data` the verbatim string and `dt` the milliseconds
   since the previous kept event — the exact `{dt, data}` shape the extension's
@@ -52,27 +62,27 @@ recordings/<date>.json.gz    # one recording per stage (official ~3-7 MB, live ~
   binds, but the replay discards them, so keeping them only bloated recordings ~100x
   and could blow `JSON.stringify` past V8's ~512 MB string limit on busy stages.
 - Weather travels inside the telemetry itself (`Course`, `RiderWindDir`, `kphWind`,
-  `degC` per rider) in **live** recordings. **Official** recordings carry
-  position/speed/gap, plus per-rider **altitude (`mAlt`) and road gradient (`Gradient`)
-  reconstructed from the stage's `trace.json` elevation profile** (positions.csv itself
-  has neither). Only wind, temperature and heading are absent from an official replay.
+  `degC` per rider) in **live** recordings, along with `Jersey`, `Pos` and `Status`. None
+  of it exists in ASO's static files, so an **official** recording can never have it: it
+  carries position/speed/gap, plus per-rider **altitude (`mAlt`) and road gradient
+  (`Gradient`) reconstructed from `rest.trace`** (positions.csv has neither). This is why
+  a live recording of a stage is never replaced by an official one.
 - `meta.source` is `"official"` for imported stages (absent for live recordings). The
   index entry mirrors it in `source` so the importer knows what to skip on re-runs.
 
-## Running the official importer (primary)
+## Running the official importer (safety net)
 
 ```
 node import-official.mjs --stage 6            # one stage by number
 node import-official.mjs --date 2026-07-09     # one stage by date
-node import-official.mjs --backfill            # all finished stages not yet imported
+node import-official.mjs --backfill            # all finished stages we don't hold yet
 ```
 
-`--backfill` is idempotent: it imports every stage with `date < today` whose bucket
-data is available and that isn't already imported from the official source (overwriting
-a live recording of the same date once, since official is primary), and skips the rest.
-So the daily cron catches up **and** picks up each new finished stage. Because the
-bucket purges each stage's `positions.csv` after ~3 days, missing a few days loses those
-stages from the official source permanently — that's what the live recorder backs up.
+`--backfill` is idempotent: it imports every stage with `date < today` whose bucket data
+is available and that isn't already in the index **from either source**, and skips the
+rest. So the daily cron catches up **and** picks up each new finished stage, without ever
+clobbering a live recording. `--stage` and `--date` DO overwrite, deliberately — that is
+the escape hatch when a live recording turns out to be broken.
 
 Env overrides: `RC_YEAR`, `RC_RACE`, `RC_BUCKET_BASE`, `RC_BASE` (REST snapshot host),
 `RC_CONCURRENCY`, `RC_MIN_TICKS`.

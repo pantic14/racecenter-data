@@ -1,0 +1,5 @@
+# Firehose recon dumps (sniff-binds.mjs). Local working material: each one is a few MB of
+# raw sampled payloads for deciding what the recorder should keep. Not what this repo is
+# for — it publishes recordings/ + index.json for the extension to fetch. Keep them out of
+# the public repo; drop this line if a capture ever needs archiving.
+sniff-*.json

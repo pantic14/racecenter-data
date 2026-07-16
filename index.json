@@ -7,7 +7,7 @@
     "ticks": 1645,
     "t0": 1783420242,
     "t1": 1783439646,
-    "bytes": 3519452,
+    "bytes": 3544917,
     "file": "recordings/2026-07-07.json.gz",
     "source": "official"
   },
@@ -19,7 +19,7 @@
     "ticks": 1236,
     "t0": 1783513188,
     "t1": 1783525716,
-    "bytes": 2807080,
+    "bytes": 2821658,
     "file": "recordings/2026-07-08.json.gz",
     "source": "official"
   },
@@ -31,7 +31,7 @@
     "ticks": 2959,
     "t0": 1783593726,
     "t1": 1783611528,
-    "bytes": 7124472,
+    "bytes": 7159273,
     "file": "recordings/2026-07-09.json.gz",
     "source": "official"
   },
@@ -43,7 +43,7 @@
     "ticks": 2259,
     "t0": 1783682592,
     "t1": 1783696344,
-    "bytes": 4649612,
+    "bytes": 4658735,
     "file": "recordings/2026-07-10.json.gz",
     "source": "official"
   },
@@ -55,7 +55,7 @@
     "ticks": 2381,
     "t0": 1783769286,
     "t1": 1783783620,
-    "bytes": 5237633,
+    "bytes": 5256640,
     "file": "recordings/2026-07-11.json.gz",
     "source": "official"
   },
@@ -64,24 +64,22 @@
     "date": "2026-07-12",
     "name": "Stage 9 - Ussel",
     "km": 154.6,
-    "ticks": 2168,
-    "t0": 1783857450,
-    "t1": 1783870566,
-    "bytes": 5455700,
-    "file": "recordings/2026-07-12.json.gz",
-    "source": "official"
+    "ticks": 2409,
+    "t0": 1783857451,
+    "t1": 1783870555,
+    "bytes": 15410359,
+    "file": "recordings/2026-07-12.json.gz"
   },
   {
     "id": "2026-07-14",
     "date": "2026-07-14",
     "name": "Stage 10 - Le Lioran",
     "km": 166.6,
-    "ticks": 2474,
-    "t0": 1784027868,
-    "t1": 1784042730,
-    "bytes": 6372755,
-    "file": "recordings/2026-07-14.json.gz",
-    "source": "official"
+    "ticks": 2531,
+    "t0": 1784029643,
+    "t1": 1784042729,
+    "bytes": 16504792,
+    "file": "recordings/2026-07-14.json.gz"
   },
   {
     "id": "2026-07-15",

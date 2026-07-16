@@ -10,6 +10,11 @@ import { gzipSync } from 'node:zlib';
 
 export const DEFAULT_BASE = 'https://racecenter.letour.fr';
 
+// ASO's public asset bucket (the one dansmacourse.letour.fr reads). The hash is an ASO
+// build env var — undocumented, and it may rotate per season.
+export const BUCKET_BASE = process.env.RC_BUCKET_BASE || 'https://storage.googleapis.com/tdf-prod-assets-7d6b412378cb7194';
+export const RACE = process.env.RC_RACE || 'tdf';
+
 export function num(v, def) {
   const n = Number(v);
   return Number.isFinite(n) && v != null && v !== '' ? n : def;
@@ -25,6 +30,32 @@ export async function getJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
   return res.json();
+}
+
+/** URL of a stage's official route trace (altimetry + points of interest). */
+export function traceUrl(year, stage) {
+  return `${BUCKET_BASE}/${RACE}/${year}/stage-${stage}/trace.json`;
+}
+
+/**
+ * A stage's official altimetry, embedded in the recording as `rest.trace` by BOTH
+ * recorders. Without it a replay has no altitude source at all: the live SSE never sends
+ * `mAlt` (verified 0/409881 riders on 2026-07-12), and the bucket drops old seasons, so
+ * fetching it at replay time would rot. ~60-80 kB raw, a rounding error inside a
+ * multi-megabyte recording. Best-effort — callers treat a failure as "no altitude".
+ */
+export async function fetchTrace(year, stage) {
+  return getJson(traceUrl(year, stage));
+}
+
+/**
+ * A stage's checkpoints: ASO's points of interest along the route, carrying the
+ * categorised climbs (name, length, gradient, category) and per-point weather. Embedded in
+ * the recording as `rest.checkpoints` because the endpoint is per-season — it will not
+ * answer for 2026 once the season rolls over.
+ */
+export async function fetchCheckpoints(year, stage, base = DEFAULT_BASE) {
+  return getJson(`${base}/api/checkpoint-${year}-${stage}`);
 }
 
 /**

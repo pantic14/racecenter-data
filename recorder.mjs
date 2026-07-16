@@ -17,7 +17,7 @@
 import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_BASE, num, raceDate, fetchRest, writeRecording, upsertIndex } from './shared.mjs';
+import { DEFAULT_BASE, num, raceDate, fetchRest, fetchTrace, fetchCheckpoints, writeRecording, upsertIndex } from './shared.mjs';
 
 // Re-exported so recorder.test.mjs can import it from here alongside createSSEParser.
 export { raceDate };
@@ -80,8 +80,12 @@ export function createSSEParser(onEvent) {
  * Open one SSE connection and pipe its body to `feed`. Resolves when the server
  * closes the stream (normal end of stage), rejects on transport / non-200 errors.
  * Registers the request via onReq so the caller can abort it when finishing.
+ *
+ * One connection is NOT one stage: racecenter drops the stream every few minutes, so any
+ * caller wanting a whole stage must wrap this in a reconnect loop (see main()).
+ * @param {string} tag prefix for this caller's log lines and User-Agent
  */
-function streamOnce(url, feed, onReq) {
+export function streamOnce(url, feed, onReq, tag = 'recorder') {
   return new Promise((resolve, reject) => {
     // insecureHTTPParser only takes effect when passed inside an explicit options
     // object (a string URL + options does NOT merge it in — verified on node 24).
@@ -92,7 +96,7 @@ function streamOnce(url, feed, onReq) {
         port: u.port || 443,
         path: u.pathname + u.search,
         insecureHTTPParser: true,
-        headers: { Accept: 'text/event-stream', 'User-Agent': 'racecenter-recorder' },
+        headers: { Accept: 'text/event-stream', 'User-Agent': `racecenter-${tag}` },
       },
       (res) => {
         if (res.statusCode !== 200) {
@@ -100,7 +104,7 @@ function streamOnce(url, feed, onReq) {
           reject(new Error(`HTTP ${res.statusCode}`));
           return;
         }
-        console.error(`[recorder] connected (HTTP 200)`);
+        console.error(`[${tag}] connected (HTTP 200)`);
         res.setEncoding('utf8');
         res.on('data', feed);
         res.on('end', resolve);
@@ -122,6 +126,24 @@ async function main() {
   console.error(`[recorder] ${date} — snapshotting REST…`);
   const rest = await fetchRest(year, BASE);
   const currentStage = rest.stages[date] || null;
+
+  // The live SSE never sends altitude, so without the official trace a live recording can
+  // never show altitude or windowed VAM on replay. Best-effort: no trace just means the
+  // recording keeps the (still complete) telemetry, exactly as before.
+  if (currentStage?.stage != null) {
+    try {
+      rest.trace = await fetchTrace(year, currentStage.stage);
+      console.error(`[recorder] trace: ${rest.trace.routePoints?.length ?? 0} points embedded`);
+    } catch (e) {
+      console.error(`[recorder] no trace (${e.message}) — recording will have no altitude`);
+    }
+    try {
+      rest.checkpoints = await fetchCheckpoints(year, currentStage.stage, BASE);
+      console.error(`[recorder] checkpoints embedded`);
+    } catch (e) {
+      console.error(`[recorder] no checkpoints (${e.message}) — replay will have no climbs`);
+    }
+  }
   console.error(`[recorder] stage: ${currentStage?.name ?? '(unknown)'} — waiting for telemetry`);
 
   /** @type {{dt: number, data: string}[]} */
@@ -171,7 +193,10 @@ async function main() {
     stopping = true;
     clearInterval(monitor);
     currentReq?.destroy();
-    write(reason);
+    write(reason).catch((e) => {
+      console.error(`[recorder] write failed: ${e.stack || e.message}`);
+      process.exit(1);
+    });
   }
 
   const monitor = setInterval(() => {
@@ -179,12 +204,29 @@ async function main() {
     else if (Date.now() - lastEventAt > SILENCE_MS) finish('silence');
   }, MONITOR_MS);
 
-  function write(reason) {
+  async function write(reason) {
     console.error(`[recorder] stop (${reason}): ${events.length} events, ${telemetryCount} telemetry ticks`);
     if (telemetryCount < MIN_TICKS) {
       console.error(`[recorder] < ${MIN_TICKS} ticks — rest day / no stage, nothing saved`);
       process.exit(0);
     }
+
+    // Re-read the checkpoints now the stage is over. Their climbs never move, but each one
+    // also carries the weather at its own spot, refreshed every 30 min for the points still
+    // AHEAD of the race and left alone once the race is past — so after the finish every
+    // point holds what it was like when the riders came through, which is exactly what a
+    // replay wants. The copy taken at startup is only the pre-stage forecast. Verified on
+    // 2026-07-15: km 123.4 stayed at its 16:30 reading through the 17:00 refresh while the
+    // finish kept updating. Best-effort: on failure the startup copy stands, as before.
+    if (currentStage?.stage != null) {
+      try {
+        rest.checkpoints = await fetchCheckpoints(year, currentStage.stage, BASE);
+        console.error('[recorder] checkpoints re-read after finish (weather as ridden)');
+      } catch (e) {
+        console.error(`[recorder] checkpoint re-read failed (${e.message}) — keeping the pre-stage copy`);
+      }
+    }
+
     const recording = {
       version: 1,
       meta: { date, year, recordedAt: new Date().toISOString() },
@@ -214,7 +256,7 @@ async function main() {
   let backoff = 2_000;
   while (!stopping) {
     try {
-      await streamOnce(BASE + '/live-stream', createSSEParser(handleEvent), (r) => (currentReq = r));
+      await streamOnce(BASE + '/live-stream', createSSEParser(handleEvent), (r) => (currentReq = r), 'recorder');
       backoff = 2_000; // clean server close → reconnect promptly
     } catch (e) {
       if (stopping) break;

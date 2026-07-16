@@ -58,7 +58,11 @@ jobs:
           if [ -n "$(git status --porcelain recordings index.json)" ]; then
             git add recordings index.json
             git commit -m "import: official replay $(date -u +%Y-%m-%d)"
-            git push
+            # The job checked out hours ago; anything pushed since would make this a
+            # non-fast-forward and throw the import away. Rebase onto whatever landed
+            # meanwhile — our commit only touches files nobody else writes.
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           else
             echo "No new official replay to import — nothing to commit."
           fi

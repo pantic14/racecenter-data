@@ -24,13 +24,22 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_BASE, num, raceDate, fetchRest, writeRecording, upsertIndex } from './shared.mjs';
+import {
+  DEFAULT_BASE,
+  BUCKET_BASE as BUCKET,
+  RACE,
+  num,
+  raceDate,
+  fetchRest,
+  fetchTrace,
+  fetchCheckpoints,
+  writeRecording,
+  upsertIndex,
+} from './shared.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const INDEX_FILE = path.join(HERE, 'index.json');
 
-const BUCKET = process.env.RC_BUCKET_BASE || 'https://storage.googleapis.com/tdf-prod-assets-7d6b412378cb7194';
-const RACE = process.env.RC_RACE || 'tdf';
 const REST_BASE = process.env.RC_BASE || DEFAULT_BASE;
 const YEAR = num(process.env.RC_YEAR, new Date().getUTCFullYear());
 const CONCURRENCY = num(process.env.RC_CONCURRENCY, 8);
@@ -44,7 +53,6 @@ const TELEMETRY_BIND = (year) => `telemetryCompetitor-${year}`;
 const stagePath = (year, stage) => `${BUCKET}/${RACE}/${year}/stage-${stage}`;
 const ridersManifestUrl = (year, stage) => `${stagePath(year, stage)}/riders/manifest.json`;
 const positionsUrl = (year, stage, bib) => `${stagePath(year, stage)}/riders/bib-${bib}/positions.csv`;
-const traceUrl = (year, stage) => `${stagePath(year, stage)}/trace.json`;
 const stagesUrl = (year) => `${BUCKET}/${RACE}/${year}/stages_${RACE}_${year}.json`;
 
 // Half-window (metres) over which the road gradient is measured, to smooth GPS noise.
@@ -63,20 +71,51 @@ function haversineM(aLat, aLon, bLat, bLon) {
 
 /**
  * Build an interpolator over a stage's route trace ({routePoints:[{lat,lon,ele}],
- * totalDistance}) so a rider's altitude and road gradient can be looked up from its
- * kmToFinish. positions.csv carries neither, but trace.json has the elevation profile
- * (kmToFinish lines up with totalDistance), and gradient is the local slope of it.
+ * totalDistance, pointsOfInterest}) so a rider's altitude and road gradient can be looked
+ * up from its kmToFinish. positions.csv carries neither, but trace.json has the elevation
+ * profile, and gradient is the local slope of it.
+ *
+ * Putting kmToFinish on the polyline is the whole difficulty, and neither obvious answer
+ * works (both verified against all 19 traces of 2026):
+ *  - `routePoints` starts at the NEUTRALISED start, 3-12.6 km before km 0, but
+ *    `totalDistance` counts from km 0 — so they are not the same span.
+ *  - Summing haversine over the points overshoots the true road distance by 3-7 km,
+ *    because GPS zigzag inflates it. The geometry is a shape, not a scale.
+ * The POIs settle it: `distanceRemaining` is exactly the kmToFinish scale, so anchoring
+ * the geometry on the km-0 POI ('#002…') maps every point onto the feed's own scale.
+ * Do NOT go back to dividing by totalDistance: that silently offsets a rider at km 0 by
+ * the whole neutral zone (7.8 km on stage 6), fading to 0 only at the finish.
  * @returns {{ totalKm:number, lookup:(kmToFinish:number)=>{ele:number, grad:number} } | null}
  */
 export function buildTraceIndex(trace) {
   const pts = trace?.routePoints;
   if (!Array.isArray(pts) || pts.length < 2) return null;
   const n = pts.length;
-  const dist = new Float64Array(n); // metres from start, ascending
-  for (let i = 1; i < n; i++) dist[i] = dist[i - 1] + haversineM(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+  const geo = new Float64Array(n); // raw geometric metres from the polyline's first point
+  for (let i = 1; i < n; i++) geo[i] = geo[i - 1] + haversineM(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+  const geoTotal = geo[n - 1];
+  if (!(geoTotal > 0)) return null;
+
+  const km0 = (trace.pointsOfInterest ?? []).find((p) => /^#002/.test(p?.label ?? ''));
+  let totalKm = Number(km0?.distanceRemaining);
+  let geoRacing = geoTotal;
+  if (Number.isFinite(totalKm) && totalKm > 0) {
+    // Search only the opening quarter: the neutral zone is never more than ~10% of a
+    // stage, and a circuit stage rides the same coordinates on several laps, so an
+    // unbounded search can anchor km 0 on a closing lap.
+    geoRacing = geoTotal - geo[nearestIdx(pts, km0.lat, km0.lon, Math.ceil(n / 4))];
+  } else {
+    // No POI. `totalDistance` is the next best scale, and bare geometry the last resort.
+    totalKm = Number(trace.totalDistance);
+    if (!Number.isFinite(totalKm) || totalKm <= 0) totalKm = geoTotal / 1000;
+  }
+  if (!(geoRacing > 0)) return null;
+
+  // Stretch the geometry onto the official scale, then work in those metres throughout.
+  const scale = (totalKm * 1000) / geoRacing;
+  const dist = new Float64Array(n);
+  for (let i = 0; i < n; i++) dist[i] = geo[i] * scale;
   const totalM = dist[n - 1];
-  if (!(totalM > 0)) return null;
-  const totalKm = Number(trace.totalDistance) > 0 ? Number(trace.totalDistance) : totalM / 1000;
 
   // Gradient (%) at each point: rise over run in the direction of travel, measured
   // across a ±window so a single noisy elevation sample can't spike it.
@@ -94,7 +133,7 @@ export function buildTraceIndex(trace) {
     grad[i] = run > 1 ? ((pts[hi].ele - pts[lo].ele) / run) * 100 : 0;
   }
 
-  /** Linear interpolation of ele + grad at a distance-from-start (metres). */
+  /** Linear interpolation of ele + grad at a distance-from-polyline-start (metres). */
   function at(distM) {
     if (distM <= 0) return { ele: pts[0].ele, grad: grad[0] };
     if (distM >= totalM) return { ele: pts[n - 1].ele, grad: grad[n - 1] };
@@ -112,11 +151,28 @@ export function buildTraceIndex(trace) {
 
   return {
     totalKm,
-    lookup(kmToFinish) {
-      const frac = 1 - Math.min(Math.max(kmToFinish / totalKm, 0), 1); // 0 at start → 1 at finish
-      return at(frac * totalM);
-    },
+    // kmToFinish is distance-from-END on the official scale; the polyline ends at the
+    // finish, so distance-from-start is simply totalM minus it. A rider still in the
+    // neutral zone reports kmToFinish > totalKm and correctly clamps to the first point.
+    lookup: (kmToFinish) => at(totalM - kmToFinish * 1000),
   };
+}
+
+/**
+ * Index of the route point closest to a lat/lon, searching pts[0..limit). Linear — only
+ * used to resolve one POI per stage, so a fancier structure would be pure overhead.
+ */
+function nearestIdx(pts, lat, lon, limit = pts.length) {
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < Math.min(limit, pts.length); i++) {
+    const d = haversineM(lat, lon, pts[i].lat, pts[i].lon);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
 }
 
 async function getJson(url) {
@@ -272,8 +328,9 @@ async function importStage(stage, date) {
   // Route trace gives the altitude profile; enrich riders with altitude + gradient
   // (positions.csv has neither). Best-effort: a missing trace just leaves them absent.
   let traceIndex = null;
+  let trace = null;
   try {
-    const trace = await getJson(traceUrl(year, stage));
+    trace = await fetchTrace(year, stage);
     traceIndex = buildTraceIndex(trace);
     console.error(`[import] trace: ${trace.routePoints?.length ?? 0} points — enriching altitude + gradient`);
   } catch (e) {
@@ -287,6 +344,12 @@ async function importStage(stage, date) {
 
   console.error(`[import] snapshotting REST…`);
   const rest = await fetchRest(year, REST_BASE);
+  if (trace) rest.trace = trace; // keeps the altimetry with the recording, forever
+  try {
+    rest.checkpoints = await fetchCheckpoints(year, stage, REST_BASE);
+  } catch (e) {
+    console.error(`[import] no checkpoints (${e.message}) — replay will have no climbs`);
+  }
   const currentStage = rest.stages[date] || null;
   const t0 = JSON.parse(events[0].data).data.TimeStamp;
   const t1 = JSON.parse(events[events.length - 1].data).data.TimeStamp;
@@ -320,10 +383,14 @@ async function fetchStages(year) {
 }
 
 /**
- * Import every finished stage (date < today) whose bucket data exists and that isn't
- * already imported from the official source. Overwrites live-recorder entries once
- * (official is primary), then skips them on later runs — idempotent, and picks up each
- * newly finished stage automatically.
+ * Import every finished stage (date < today) that the bucket still has and that we don't
+ * already hold — from either source. Idempotent, and picks up each newly finished stage.
+ *
+ * A stage we already recorded LIVE is left alone: the live SSE is the only place wind,
+ * temperature, heading, jersey and road position ever exist, and no import can bring them
+ * back, whereas altitude (the one thing live lacks) now comes from the embedded trace.
+ * So live is the richer source and official is the safety net for days the recorder
+ * missed. `--stage`/`--date` still overwrite anything, on purpose.
  */
 async function backfill(year) {
   const stages = await fetchStages(year);
@@ -334,8 +401,9 @@ async function backfill(year) {
     const date = String(s.date).slice(0, 10);
     if (!(date < today)) continue; // stage not finished yet
     const existing = byId.get(date);
-    if (existing?.source === 'official') {
-      console.error(`[import] ${date} (stage ${s.stage}) — already imported, skip`);
+    if (existing) {
+      const how = existing.source === 'official' ? 'already imported' : 'live recording kept (richer)';
+      console.error(`[import] ${date} (stage ${s.stage}) — ${how}, skip`);
       continue;
     }
     const status = await statusOf(ridersManifestUrl(year, s.stage)).catch(() => 0);
