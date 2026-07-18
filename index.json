@@ -113,5 +113,16 @@
     "t1": 1784303035,
     "bytes": 16009582,
     "file": "recordings/2026-07-17.json.gz"
+  },
+  {
+    "id": "2026-07-18",
+    "date": "2026-07-18",
+    "name": "Stage 14 - Le Markstein Fellering",
+    "km": 155.3,
+    "ticks": 2068,
+    "t0": 1784374517,
+    "t1": 1784389372,
+    "bytes": 13722682,
+    "file": "recordings/2026-07-18.json.gz"
   }
 ]
