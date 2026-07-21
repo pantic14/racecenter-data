@@ -135,5 +135,16 @@
     "t1": 1784476281,
     "bytes": 18084772,
     "file": "recordings/2026-07-19.json.gz"
+  },
+  {
+    "id": "2026-07-21",
+    "date": "2026-07-21",
+    "name": "Stage 16 - Thonon-les-Bains",
+    "km": 26.1,
+    "ticks": 3064,
+    "t0": 1784635334,
+    "t1": 1784648845,
+    "bytes": 1734982,
+    "file": "recordings/2026-07-21.json.gz"
   }
 ]
