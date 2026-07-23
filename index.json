@@ -157,5 +157,16 @@
     "t1": 1784734743,
     "bytes": 13842642,
     "file": "recordings/2026-07-22.json.gz"
+  },
+  {
+    "id": "2026-07-23",
+    "date": "2026-07-23",
+    "name": "Stage 18 - Orcières-Merlette",
+    "km": 185.2,
+    "ticks": 2355,
+    "t0": 1784808284,
+    "t1": 1784820877,
+    "bytes": 14052950,
+    "file": "recordings/2026-07-23.json.gz"
   }
 ]
